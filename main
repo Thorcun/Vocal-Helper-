@@ -1,0 +1,137 @@
+import sounddevice as sd
+import numpy as np
+import librosa
+import re  
+import matplotlib.pyplot as plt
+import time
+
+DURATION = 1
+SAMPLE_RATE = 44100  
+FRAME_LENGTH = 2048  
+HOP_LENGTH = 512  
+
+note_mapping = {
+    "C": "Do",
+    "C#": "Do#",
+    "D": "Re",
+    "D#": "Re#",
+    "E": "Mi",
+    "F": "Fa",
+    "F#": "Fa#",
+    "G": "Sol",
+    "G#": "Sol#",
+    "A": "La",
+    "A#": "La#",
+    "B": "Si"
+}
+
+graph_data = {
+    "frequencies": [],
+    "deviations": [],
+    "note_names": [],
+    "time_stamps": []
+}
+
+start_time = None
+
+def english_to_turkish_note_with_octave(frequency):
+    note = librosa.hz_to_note(frequency) 
+
+    match = re.match(r"([A-Ga-g][#\u266d]?)(\d+)", note)  # \u266d = Unicode for ♭
+    if match:
+        base_note = match.group(1)  
+        octave = match.group(2)  
+        
+        if base_note in note_mapping:
+            turkish_base = note_mapping[base_note]  
+            return f"{turkish_base}{octave}"  
+    return note  
+
+def finalize_graph():
+    if not graph_data["time_stamps"]:
+        print("Grafik için yeterli veri bulunamadı.")
+        return
+
+    plt.clf()
+    time_stamps = graph_data["time_stamps"]
+    deviations = graph_data["deviations"]
+    note_names = graph_data["note_names"]
+
+    if deviations:
+        plt.figure(figsize=(12, 6))
+        plt.plot(time_stamps, deviations, marker='o', color="blue", label="Sapma (Hz)")
+        plt.axhline(0, color='red', linestyle='--', label="Doğru Nota Frekansı")
+        for i, note in enumerate(note_names):
+            plt.text(time_stamps[i], deviations[i], note, fontsize=9, ha='center', va='bottom')
+        plt.xlabel("Zaman (saniye)")
+        plt.ylabel("Frekans Sapması (Hz)")
+        plt.title("Nota Analizi ve Sapma Grafiği")
+        plt.legend()
+        plt.grid()
+        plt.show()
+    else:
+        print("Grafik çizilecek sapma verisi bulunamadı.")
+
+def plot_pitch_deviation(frequencies, elapsed_time):
+    for freq in frequencies:
+        if not np.isnan(freq):
+            note = librosa.hz_to_note(freq)
+            base_note = re.match(r"([A-Ga-g][#\u266d]?)", note).group(1) if note else ""
+            if base_note:
+                note_hz = librosa.note_to_hz(base_note)
+                deviation = freq - note_hz
+                graph_data["frequencies"].append(freq)
+                graph_data["deviations"].append(deviation)
+                graph_data["note_names"].append(base_note)
+                graph_data["time_stamps"].append(elapsed_time)
+
+def analyze_audio(audio_data, sample_rate, elapsed_time):
+    f0, voiced_flag, voiced_probs = librosa.pyin(
+        audio_data,
+        fmin=librosa.note_to_hz('C2'),  
+        fmax=librosa.note_to_hz('C7'),  
+        frame_length=FRAME_LENGTH,
+        hop_length=HOP_LENGTH
+    )
+    
+    if f0 is not None and len(f0) > 0:
+        f0_filtered = f0[~np.isnan(f0)]  
+        if len(f0_filtered) > 0:
+            mean_f0 = np.mean(f0_filtered)  
+            note_with_octave = english_to_turkish_note_with_octave(mean_f0)  
+            print(f"Temel frekans: {mean_f0:.2f} Hz, Nota: {note_with_octave}")
+            plot_pitch_deviation(f0, elapsed_time)
+        else:
+            print("Ses algılanmadı.")
+    else:
+        print("Ses algılanmadı.")
+
+def callback(indata, frames, stream_time, status):
+    global start_time
+    if status:
+        print(status)
+    elapsed_time = time.time() - start_time
+    audio_data = np.squeeze(indata)
+    analyze_audio(audio_data, SAMPLE_RATE, elapsed_time)
+
+    # Stop listening after 15 seconds
+    if elapsed_time >= 30:
+        print("30 saniye doldu, mikrofon dinleme sona eriyor...")
+        print("30 saniyelik analiz tamamlandı. Grafik hazırlanıyor...")
+        finalize_graph()
+        raise sd.CallbackStop()
+
+def listen_mic():
+    global start_time
+    print("Mikrofon dinleniyor, 15 saniye boyunca analiz yapılacak...")
+    start_time = time.time()
+    try:
+        with sd.InputStream(callback=callback, channels=1, samplerate=SAMPLE_RATE, blocksize=int(SAMPLE_RATE * DURATION)):
+            while True:
+                sd.sleep(100)
+    except sd.CallbackStop:
+        print("Dinleme işlemi sona erdi.")
+    except Exception as e:
+        print(f"Bir hata oluştu: {e}")
+
+listen_mic()
